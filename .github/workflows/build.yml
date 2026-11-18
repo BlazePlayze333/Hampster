@@ -1,0 +1,43 @@
+name: Build DesktopHamster
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+    paths:
+      - '**/*.cs'
+      - '**/*.csproj'
+      - 'app.ico'
+      - '.github/workflows/build.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: hamster-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Publish single EXE
+        shell: pwsh
+        run: |
+          dotnet publish ./DesktopHamster.csproj -c Release -r win-x64 --self-contained true -o ./publish
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Test-Path ./publish/DesktopHamster.exe)) { throw 'Published EXE missing' }
+      - name: Publish downloadable release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          $tag = 'build-${{ github.run_id }}-${{ github.run_attempt }}'
+          gh release create $tag ./publish/DesktopHamster.exe --target '${{ github.sha }}' --title 'DesktopHamster build ${{ github.run_number }}' --notes 'Windows x64 single EXE. Includes wheel, rest breaks, tray care and petting. Exit the previous hamster before replacing it. Automated build; no interactive Windows tests were run.' --latest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
