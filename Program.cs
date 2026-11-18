@@ -13,12 +13,12 @@ public sealed class SavedState {
 internal sealed class Prop {
  public string Kind; public PointF Position; public bool Visible;
  public Prop(string kind){Kind=kind;}
- public RectangleF Bounds=>new(Position.X-60,Position.Y-60,120,120);
+ public RectangleF Bounds=>Kind=="Wheel"?new(Position.X-105,Position.Y-120,210,210):new(Position.X-60,Position.Y-60,120,120);
 }
 internal sealed class Buddy:Form {
  readonly Random rng=new(); readonly Stopwatch clock=Stopwatch.StartNew();
  readonly System.Windows.Forms.Timer timer=new(){Interval=33};
- readonly Dictionary<int,Prop> props=new(){[1]=new("Food"),[2]=new("Bed"),[3]=new("Toy"),[4]=new("Ball")};
+ readonly Dictionary<int,Prop> props=new(){[1]=new("Food"),[2]=new("Bed"),[3]=new("Toy"),[4]=new("Ball"),[5]=new("Wheel")};
  readonly ContextMenuStrip menu=new(); readonly NotifyIcon tray; readonly List<int> keys=new(); readonly List<Rectangle> windows=new();
  readonly List<(float x,float y,float len,Color color)> fur=new();
  readonly string file=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"DesktopHamster","state.json");
@@ -27,10 +27,14 @@ internal sealed class Buddy:Form {
  double nextCareUpdate,petStarted,lastPetReward=-10;
  PointF pet,target,offset; int goal; bool hidden,paused,ball,right=true;
  string activity="Resting"; double last,chooseAt,until,nextBite,playStart,nextScan,nextSave; float spin;
- double Now=>clock.Elapsed.TotalSeconds;
+ double simulationTime,nextRest=40,wheelCooldown; bool wheelNeedsRecovery;
+ float wheelAngle;
+ const double NormalEnergyDrain=.18,WheelEnergyDrain=NormalEnergyDrain*4,RestEnergyGain=.65;
+ double Now=>simulationTime;
  public Buddy(){
   try{if(File.Exists(file))stats=JsonSerializer.Deserialize<SavedState>(File.ReadAllText(file))??new();}catch{}
   stats.Hunger=Math.Clamp(stats.Hunger,0,100);stats.Energy=Math.Clamp(stats.Energy,0,100);stats.Happiness=Math.Clamp(stats.Happiness,0,100);stats.Food=Math.Clamp(stats.Food,0,24);
+  try{string? exe=Environment.ProcessPath;if(exe!=null)Icon=System.Drawing.Icon.ExtractAssociatedIcon(exe);}catch{}
   Text="Desktop Hamster";FormBorderStyle=FormBorderStyle.None;ShowInTaskbar=false;TopMost=true;StartPosition=FormStartPosition.Manual;
   Bounds=SystemInformation.VirtualScreen;BackColor=Color.Magenta;TransparencyKey=Color.Magenta;DoubleBuffered=true;
   var area=Screen.PrimaryScreen!.WorkingArea;pet=new(area.Left+area.Width/2f-Left,area.Bottom-110-Top);target=pet;
@@ -41,50 +45,98 @@ internal sealed class Buddy:Form {
   menu.Items.AddRange(new ToolStripItem[]{hungerItem,energyItem,happinessItem,foodItem,activityItem,new ToolStripSeparator()});
   menu.Opening+=(_,_)=>UpdateCare();
   menu.Items.Add("Call to pointer",null,(_,_)=>Call());menu.Items.Add("Hide / show",null,(_,_)=>ToggleHidden());
-  var pause=new ToolStripMenuItem("Pause"){CheckOnClick=true};pause.CheckedChanged+=(_,_)=>{paused=pause.Checked;last=Now;};menu.Items.Add(pause);
+  var pause=new ToolStripMenuItem("Pause"){CheckOnClick=true};pause.CheckedChanged+=(_,_)=>{paused=pause.Checked;last=clock.Elapsed.TotalSeconds;};menu.Items.Add(pause);
   var refill=new ToolStripMenuItem("Refill food bowl"){ShortcutKeyDisplayString="Ctrl+Alt+E"};refill.Click+=(_,_)=>RefillFood();menu.Items.Add(refill);menu.Items.Add("Exit",null,(_,_)=>Close());
-  tray=new(){Icon=SystemIcons.Information,Text="Desktop Hamster - click for care",ContextMenuStrip=menu,Visible=true};
+  tray=new(){Icon=Icon??SystemIcons.Information,Text="Desktop Hamster - click for care",ContextMenuStrip=menu,Visible=true};
   tray.MouseClick+=(_,e)=>{if(e.Button==MouseButtons.Left){UpdateCare();menu.Show(Cursor.Position);}};
   UpdateCare();
   timer.Tick+=(_,_)=>Step();Shown+=(_,_)=>{RegisterKeys();timer.Start();};
  }
  protected override bool ShowWithoutActivation=>true;
  protected override CreateParams CreateParams{get{var p=base.CreateParams;p.ExStyle|=0x08000000|0x80;return p;}}
- void RegisterKeys(){Keys[] list={Keys.F,Keys.B,Keys.T,Keys.Q,Keys.R,Keys.H,Keys.E};var failed=new List<string>();for(int i=0;i<list.Length;i++){if(RegisterHotKey(Handle,i+1,0x4003,(uint)list[i]))keys.Add(i+1);else failed.Add("Ctrl+Alt+"+list[i]);}if(failed.Count>0){tray.BalloonTipTitle="Shortcut unavailable";tray.BalloonTipText=string.Join(", ",failed)+" is in use. Close the conflicting app and restart.";tray.ShowBalloonTip(6000);}}
- protected override void WndProc(ref Message m){if(m.Msg==0x312){int id=m.WParam.ToInt32();if(id<=4)Toggle(id);else if(id==5)Call();else if(id==6)ToggleHidden();else if(id==7)RefillFood();return;}base.WndProc(ref m);}
+ void RegisterKeys(){Keys[] list={Keys.F,Keys.B,Keys.T,Keys.Q,Keys.R,Keys.H,Keys.E,Keys.W};var failed=new List<string>();for(int i=0;i<list.Length;i++){if(RegisterHotKey(Handle,i+1,0x4003,(uint)list[i]))keys.Add(i+1);else failed.Add("Ctrl+Alt+"+list[i]);}if(failed.Count>0){tray.BalloonTipTitle="Shortcut unavailable";tray.BalloonTipText=string.Join(", ",failed)+" is in use. Close the conflicting app and restart.";tray.ShowBalloonTip(6000);}}
+ protected override void WndProc(ref Message m){if(m.Msg==0x312){int id=m.WParam.ToInt32();if(id<=4)Toggle(id);else if(id==5)Call();else if(id==6)ToggleHidden();else if(id==7)RefillFood();else if(id==8)Toggle(5);return;}base.WndProc(ref m);}
  static float Dist(PointF a,PointF b)=>MathF.Sqrt((a.X-b.X)*(a.X-b.X)+(a.Y-b.Y)*(a.Y-b.Y));
  PointF Clamp(PointF p){var r=Screen.FromPoint(PointToScreen(Point.Round(p))).WorkingArea;r.Offset(-Left,-Top);return new(Math.Clamp(p.X,r.Left+80,Math.Max(r.Left+80,r.Right-80)),Math.Clamp(p.Y,r.Top+80,Math.Max(r.Top+80,r.Bottom-80)));}
  void Cancel(){goal=0;until=0;target=pet;chooseAt=Now+1;activity="Resting";}
- void ToggleHidden(){hidden=!hidden;last=Now;Invalidate();}
- void Toggle(int id){var p=props[id];p.Visible=!p.Visible;if(p.Visible)p.Position=Clamp(PointToClient(Cursor.Position));if(id==4&&!p.Visible)ball=false;if(goal==id)Cancel();if(dragging==p){dragging=null;Capture=false;}Invalidate();}
- void Call(){hidden=false;goal=0;until=0;target=Clamp(PointToClient(Cursor.Position));chooseAt=Now+90;activity="Walking";}
- PointF Approach(int id){var p=props[id].Position;return id==1?Clamp(new(p.X-80,p.Y-5)):id==3?Clamp(new(p.X-72,p.Y)):p;}
+ void ToggleHidden(){hidden=!hidden;last=clock.Elapsed.TotalSeconds;Invalidate();}
+ void Toggle(int id){var p=props[id];p.Visible=!p.Visible;if(p.Visible)p.Position=ClampProp(p,PointToClient(Cursor.Position));if(id==4&&!p.Visible)ball=false;if(goal==id){if(id==5&&activity=="Running on wheel")StopWheel();else Cancel();}if(dragging==p){dragging=null;Capture=false;}Invalidate();}
+ void Call(){if(activity=="Running on wheel")StopWheel();nextRest=Now+30;hidden=false;goal=0;until=0;target=Clamp(PointToClient(Cursor.Position));chooseAt=Now+90;activity="Walking";}
+ PointF Approach(int id){var p=props[id].Position;return id==1?Clamp(new(p.X-80,p.Y-5)):id==3?Clamp(new(p.X-72,p.Y)):id==5?new(p.X,p.Y+32):p;}
+ PointF ClampProp(Prop p,PointF value){
+  if(p.Kind!="Wheel")return Clamp(value);
+  var r=Screen.FromPoint(PointToScreen(Point.Round(value))).WorkingArea;r.Offset(-Left,-Top);
+  return new(Math.Clamp(value.X,r.Left+112,Math.Max(r.Left+112,r.Right-112)),Math.Clamp(value.Y,r.Top+123,Math.Max(r.Top+123,r.Bottom-120)));
+ }
+ void BeginRest(bool tired=false){
+  goal=0;target=pet;activity="Taking a breather";until=Now+(tired?Math.Clamp((55-stats.Energy)/RestEnergyGain,18,90):rng.Next(8,15));chooseAt=until;nextRest=until+rng.Next(35,66);
+ }
+ void StopWheel(){
+  bool tired=stats.Energy<25;if(tired)wheelNeedsRecovery=true;
+  var p=props[5].Position;pet=Clamp(new(p.X-145,p.Y+32));
+  wheelCooldown=Now+rng.Next(45,81);BeginRest(tired);
+  if(tired&&props[2].Visible&&dragging!=props[2]){goal=2;target=Approach(2);until=0;chooseAt=Now+90;activity="Walking";}
+ }
+
  void Choose(){
-  until=0;if(ball&&rng.NextDouble()<.25)ball=false;
-  if(!ball&&props[1].Visible&&stats.Food>0&&stats.Hunger>28)goal=1;
-  else if(!ball&&props[2].Visible&&stats.Energy<45)goal=2;
-  else{int[] list=props.Where(k=>k.Value.Visible&&k.Value!=dragging&&(k.Key!=1||stats.Food>0)).Select(k=>k.Key).ToArray();goal=!ball&&list.Length>0&&rng.NextDouble()<.6?list[rng.Next(list.Length)]:0;}
-  if(goal>0)target=Approach(goal);else{var r=Screen.FromPoint(PointToScreen(Point.Round(pet))).WorkingArea;target=Clamp(new(r.Left-Left+(float)rng.NextDouble()*r.Width,r.Top-Top+(float)rng.NextDouble()*r.Height));}chooseAt=Now+18;
+  until=0;
+  if(ball&&(stats.Energy<35||rng.NextDouble()<.25))ball=false;
+  if(!ball&&stats.Energy<25){if(props[2].Visible&&dragging!=props[2])goal=2;else{BeginRest(true);return;}}
+  else if(!ball&&props[1].Visible&&dragging!=props[1]&&stats.Food>0&&stats.Hunger>28)goal=1;
+  else if(!ball&&props[2].Visible&&dragging!=props[2]&&stats.Energy<45)goal=2;
+  else if(!ball&&Now>=nextRest){BeginRest();return;}
+  else{
+   int[] list=props.Where(k=>k.Value.Visible&&k.Value!=dragging&&
+    (k.Key!=1||stats.Food>0)&&(k.Key!=5||(stats.Energy>50&&!wheelNeedsRecovery&&Now>=wheelCooldown))).Select(k=>k.Key).ToArray();
+   goal=!ball&&list.Length>0&&rng.NextDouble()<.65?list[rng.Next(list.Length)]:0;
+  }
+  if(goal>0)target=Approach(goal);
+  else{var r=Screen.FromPoint(PointToScreen(Point.Round(pet))).WorkingArea;target=Clamp(new(r.Left-Left+(float)rng.NextDouble()*r.Width,r.Top-Top+(float)rng.NextDouble()*r.Height));}
+  chooseAt=Now+18;
  }
  void Step(){
-  double now=Now;float dt=(float)Math.Clamp(now-last,0,.1);last=now;if(now>nextSave){Save();nextSave=now+30;}if(now>=nextCareUpdate){UpdateCare();nextCareUpdate=now+.25;}
-  if(hidden||paused||dragging?.Kind=="Ball"&&ball)return;
-  stats.Hunger=Math.Min(100,stats.Hunger+dt*.06);stats.Energy=Math.Max(0,stats.Energy-dt*.035);stats.Happiness=Math.Max(0,stats.Happiness-dt*.015);
+  double real=clock.Elapsed.TotalSeconds;float dt=(float)Math.Clamp(real-last,0,.1);last=real;
+  if(real>nextSave){Save();nextSave=real+30;}
+  if(hidden||paused||dragging?.Kind=="Ball"&&ball){UpdateCare();return;}
+  simulationTime+=dt;double now=Now;
+  if(now>=nextCareUpdate){UpdateCare();nextCareUpdate=now+.25;}
+  stats.Hunger=Math.Min(100,stats.Hunger+dt*.06);stats.Happiness=Math.Max(0,stats.Happiness-dt*.015);
+  bool running=activity=="Running on wheel",resting=activity is "Taking a breather" or "Resting";
+  if(activity=="Sleeping")stats.Energy=Math.Min(100,stats.Energy+dt*5);
+  else if(resting)stats.Energy=Math.Min(100,stats.Energy+dt*RestEnergyGain);
+  else stats.Energy=Math.Max(0,stats.Energy-dt*(running?WheelEnergyDrain:NormalEnergyDrain));
+  if(stats.Energy>50)wheelNeedsRecovery=false;
   if(now>nextScan){ReadWindows();nextScan=now+1;}
-  if(goal>0&&(!props[goal].Visible||dragging==props[goal]))Cancel();
+  if(goal>0&&(!props[goal].Visible||dragging==props[goal])){if(running)StopWheel();else Cancel();}
+  if(activity=="Running on wheel"){
+   if(stats.Energy<25||now>=until){StopWheel();Invalidate();return;}
+   pet=Approach(5);wheelAngle=(wheelAngle+dt*240)%360;stats.Happiness=Math.Min(100,stats.Happiness+dt*.8);Invalidate();return;
+  }
   if(now<until){
-   if(activity=="Eating"){if(stats.Food<=0||stats.Hunger<=0){Cancel();Invalidate();return;}if(now>=nextBite){stats.Food--;stats.Hunger=Math.Max(0,stats.Hunger-5);nextBite=now+1.15;}}
-   else if(activity=="Sleeping")stats.Energy=Math.Min(100,stats.Energy+dt*5);
-   else if(activity=="Playing")stats.Happiness=Math.Min(100,stats.Happiness+dt*8);
+   if(activity=="Eating"){
+    if(stats.Food<=0||stats.Hunger<=0){Cancel();Invalidate();return;}
+    if(now>=nextBite){stats.Food--;stats.Hunger=Math.Max(0,stats.Hunger-5);nextBite=now+1.15;}
+   }else if(activity=="Playing")stats.Happiness=Math.Min(100,stats.Happiness+dt*8);
    Invalidate();return;
   }
-  if(goal>0&&(activity is "Eating" or "Sleeping" or "Playing"))Cancel();
-  if(now>chooseAt)Choose();if(goal>0)target=Approach(goal);float d=Dist(pet,target);
+  if(activity=="Taking a breather"){Cancel();chooseAt=now;}
+  if(goal>0&&(activity is "Eating" or "Sleeping" or "Playing")){
+   if(activity=="Sleeping")nextRest=now+rng.Next(35,66);Cancel();
+  }
+  if(goal==0&&activity=="Walking"&&!ball&&now>=nextRest){BeginRest();Invalidate();return;}
+  if(now>=chooseAt)Choose();
+  if(now<until){Invalidate();return;}
+  if(goal>0)target=Approach(goal);float d=Dist(pet,target);
   if(d<4){
+   pet=target;
    if(goal==4){ball=true;goal=0;chooseAt=0;activity="Resting";props[4].Position=pet;}
    else if(goal==1){right=true;activity="Eating";until=now+10;chooseAt=until;nextBite=now+1.15;}
    else if(goal==2){activity="Sleeping";until=now+12;chooseAt=until;}
    else if(goal==3){right=true;activity="Playing";playStart=now;until=now+6;chooseAt=until;}
+   else if(goal==5){
+    if(stats.Energy<=50||wheelNeedsRecovery||now<wheelCooldown){BeginRest();}
+    else{right=true;activity="Running on wheel";until=now+rng.Next(18,33);chooseAt=until;}
+   }
    else{activity="Resting";if(chooseAt>now+3)chooseAt=now+2;}
   }else{
    activity=ball?"Rolling":"Walking";float dx=(target.X-pet.X)/d,dy=(target.Y-pet.Y)/d,speed=ball?120:58;right=dx>=0;
@@ -99,8 +151,8 @@ internal sealed class Buddy:Form {
   var name=new StringBuilder(128);GetClassName(h,name,128);if(name.ToString() is "Progman" or "WorkerW" or "Shell_TrayWnd" or "Shell_SecondaryTrayWnd")return true;
   if(DwmGetWindowAttribute(h,14,out int cloaked,4)==0&&cloaked!=0)return true;RECT r;if(DwmGetWindowAttribute(h,9,out r,Marshal.SizeOf<RECT>())!=0&&!GetWindowRect(h,out r))return true;
   if(r.Right-r.Left>180&&r.Bottom-r.Top>100)windows.Add(Rectangle.FromLTRB(r.Left,r.Top,r.Right,r.Bottom));return true;},IntPtr.Zero);}
- protected override void OnMouseDown(MouseEventArgs e){base.OnMouseDown(e);if(e.Button==MouseButtons.Right){menu.Show(Cursor.Position);return;}if(e.Button!=MouseButtons.Left)return;if(!ball&&HitHamster(e.Location)){PetHamster();return;}foreach(var p in props.Values.Reverse()){if(!p.Visible||!p.Bounds.Contains(e.Location))continue;dragging=p;offset=new(p.Position.X-e.X,p.Position.Y-e.Y);Capture=true;if(goal>0&&props[goal]==p)Cancel();return;}}
- protected override void OnMouseMove(MouseEventArgs e){base.OnMouseMove(e);if(dragging==null)return;dragging.Position=Clamp(new(e.X+offset.X,e.Y+offset.Y));if(dragging.Kind=="Ball"&&ball){pet=dragging.Position;target=pet;chooseAt=Now+1;}Invalidate();}
+ protected override void OnMouseDown(MouseEventArgs e){base.OnMouseDown(e);if(e.Button==MouseButtons.Right){menu.Show(Cursor.Position);return;}if(e.Button!=MouseButtons.Left)return;if(!ball&&HitHamster(e.Location)){PetHamster();return;}foreach(var p in props.Values.Reverse()){if(!p.Visible||!p.Bounds.Contains(e.Location))continue;dragging=p;offset=new(p.Position.X-e.X,p.Position.Y-e.Y);Capture=true;if(goal>0&&props[goal]==p){if(p.Kind=="Wheel"&&activity=="Running on wheel")StopWheel();else Cancel();}return;}}
+ protected override void OnMouseMove(MouseEventArgs e){base.OnMouseMove(e);if(dragging==null)return;dragging.Position=ClampProp(dragging,new(e.X+offset.X,e.Y+offset.Y));if(dragging.Kind=="Ball"&&ball){pet=dragging.Position;target=pet;chooseAt=Now+1;}Invalidate();}
  protected override void OnMouseUp(MouseEventArgs e){dragging=null;Capture=false;base.OnMouseUp(e);}
  void RefillFood(){stats.Food=24;Save();UpdateCare();Invalidate();}
  void UpdateCare(){
@@ -119,11 +171,12 @@ internal sealed class Buddy:Form {
  }
  void PetHamster(){
   if(hidden||paused||ball)return;
+  if(activity=="Running on wheel")StopWheel();
   double now=Now;goal=0;target=pet;petStarted=now;until=now+2.4;chooseAt=until+.5;activity="Enjoying pets";
   if(now-lastPetReward>=.7){stats.Happiness=Math.Min(100,stats.Happiness+2);lastPetReward=now;}
   UpdateCare();Invalidate();
  }
- protected override void OnPaint(PaintEventArgs e){base.OnPaint(e);if(hidden)return;var g=e.Graphics;g.SmoothingMode=SmoothingMode.AntiAlias;foreach(var p in props.Values)if(p.Visible&&!(ball&&p.Kind=="Ball"))DrawProp(g,p);DrawHamster(g);if(ball)DrawBall(g,pet,true);}
+ protected override void OnPaint(PaintEventArgs e){base.OnPaint(e);if(hidden)return;var g=e.Graphics;g.SmoothingMode=SmoothingMode.AntiAlias;foreach(var p in props.Values)if(p.Visible&&!(ball&&p.Kind=="Ball"))DrawProp(g,p);DrawHamster(g);if(props[5].Visible)DrawWheelFront(g,props[5]);if(ball)DrawBall(g,pet,true);}
  static void E(Graphics g,Color c,float x,float y,float w,float h){using var b=new SolidBrush(c);g.FillEllipse(b,x,y,w,h);}
  static void L(Graphics g,Color c,float width,float x,float y,float xx,float yy){using var p=new Pen(c,width){StartCap=LineCap.Round,EndCap=LineCap.Round};g.DrawLine(p,x,y,xx,yy);}
  static GraphicsPath Body(){var p=new GraphicsPath();p.AddBezier(-49,10,-53,-13,-42,-34,-21,-37);p.AddBezier(-21,-37,-1,-42,20,-34,33,-23);p.AddBezier(33,-23,39,-13,43,7,33,19);p.AddBezier(33,19,14,32,-29,30,-43,22);p.AddBezier(-43,22,-47,20,-49,15,-49,10);p.CloseFigure();return p;}
@@ -131,11 +184,12 @@ internal sealed class Buddy:Form {
  void Paw(Graphics g,float x,float y,float lift){using var p=new GraphicsPath();p.AddBezier(x,y-lift,x+3,y-3-lift,x+8,y-1-lift,x+10,y+2-lift);p.AddBezier(x+10,y+2-lift,x+12,y+5-lift,x+5,y+6-lift,x,y+3-lift);p.CloseFigure();using var b=new LinearGradientBrush(new RectangleF(x-1,y-4-lift,15,12),Color.FromArgb(230,189,177),Color.FromArgb(167,116,106),90);g.FillPath(b,p);for(int i=0;i<3;i++)L(g,Color.FromArgb(138,100,91),.6f,x+5+i*2,y+2-lift,x+5+i*2,y+4-lift);}
  void DrawHamster(Graphics g){
   var saved=g.Save();g.TranslateTransform(pet.X,pet.Y);if(!right)g.ScaleTransform(-1,1);
-  bool moving=activity is "Walking" or "Rolling",eating=activity=="Eating",petted=activity=="Enjoying pets"&&Now<until;
+  bool moving=activity is "Walking" or "Rolling" or "Running on wheel",eating=activity=="Eating",petted=activity=="Enjoying pets"&&Now<until;
+  bool resting=activity is "Taking a breather" or "Resting";
   float petTime=(float)(Now-petStarted),petEase=petted?Math.Clamp(petTime/.28f,0,1)*Math.Clamp((float)(until-Now)/.45f,0,1):0;
-  float stride=moving?(float)Math.Sin(Now*14):0;
+  float stride=moving?(float)Math.Sin(Now*(activity=="Running on wheel"?22:14)):0;
   E(g,Color.FromArgb(97,88,76),-44,27,93,6);Paw(g,-28,24,Math.Max(0,stride)*2.5f);Paw(g,23,23,Math.Max(0,-stride)*2.5f);
-  g.TranslateTransform(0,moving?MathF.Abs(stride)*-1.2f:(float)Math.Sin(Now*2.7)*.5f);
+  g.TranslateTransform(0,moving?MathF.Abs(stride)*-1.2f:(float)Math.Sin(Now*(resting?1.8:2.7))*(resting?.85f:.5f));
   if(petted){g.TranslateTransform(0,22);g.RotateTransform((-2.3f+MathF.Sin(petTime*7)*.8f)*petEase);g.TranslateTransform(0,-22);g.TranslateTransform(1.5f*petEase,MathF.Sin(petTime*8)*.6f*petEase);}
   if(activity=="Sleeping"){using var body=Body();using var b=new LinearGradientBrush(new Rectangle(-54,-44,110,80),Color.FromArgb(226,192,139),Color.FromArgb(121,80,47),80);g.FillPath(b,body);E(g,Color.FromArgb(233,214,184),12,-5,29,25);L(g,Color.FromArgb(54,39,27),1.2f,24,4,32,5);g.Restore(saved);return;}
   E(g,Color.FromArgb(175,139,102),-54,10,10,7);
@@ -143,14 +197,14 @@ internal sealed class Buddy:Form {
   E(g,Color.FromArgb(151,108,75),15,-42,18,21);E(g,Color.FromArgb(220,178,162),18,-39,12,15);E(g,Color.FromArgb(190,143,130),21,-37,6,11);
   var hs=g.Save();if(petted){g.TranslateTransform(15,-11);g.RotateTransform(-7*petEase);g.TranslateTransform(-15,11);}if(eating){g.TranslateTransform(15,-11);g.RotateTransform(5f+(float)Math.Sin(Now*5)*.7f);g.TranslateTransform(-15,11);}
   using(var head=Head()){using var b=new LinearGradientBrush(new Rectangle(0,-36,63,59),Color.FromArgb(234,203,151),Color.FromArgb(168,121,77),73);g.FillPath(b,head);var clip=g.Save();g.SetClip(head,CombineMode.Intersect);E(g,Color.FromArgb(244,229,199),29,-3,35,26);for(int i=0;i<100;i++){float x=9+(i*17%47),y=-30+(i*11%48);L(g,Color.FromArgb(110,227,198,150),.6f,x,y,x-2.5f,y+1.3f);}g.Restore(clip);}
-  E(g,Color.FromArgb(124,89,58),29,-21,11,12);if(petted){using var eye=new Pen(Color.FromArgb(35,26,20),1.5f){StartCap=LineCap.Round,EndCap=LineCap.Round};g.DrawArc(eye,31,-19,8,6,12,156);}else if(Now%5.6<.13)L(g,Color.FromArgb(35,26,20),1.6f,31,-15,39,-15);else{E(g,Color.FromArgb(24,21,18),31,-21,8,10);E(g,Color.WhiteSmoke,32,-20,2.2f,2.2f);}
+  E(g,Color.FromArgb(124,89,58),29,-21,11,12);if(petted||resting&&Now%6<3){using var eye=new Pen(Color.FromArgb(35,26,20),1.5f){StartCap=LineCap.Round,EndCap=LineCap.Round};g.DrawArc(eye,31,-19,8,6,12,156);}else if(Now%5.6<.13)L(g,Color.FromArgb(35,26,20),1.6f,31,-15,39,-15);else{E(g,Color.FromArgb(24,21,18),31,-21,8,10);E(g,Color.WhiteSmoke,32,-20,2.2f,2.2f);}
   E(g,Color.FromArgb(199,143,135),54,-3,6,4);L(g,Color.FromArgb(109,76,57),.7f,54,2,52,6);
   for(int i=0;i<4;i++)L(g,Color.FromArgb(167,153,130),.6f,48,5,65+i*2,-4+i*4+(float)Math.Sin(Now*11+i)*.45f);
   if(eating){float phase=(float)((Now-nextBite+1.15)/1.15);bool lifting=phase>.43f&&phase<.94f;float lift=lifting?MathF.Sin((phase-.43f)/.51f*MathF.PI)*2.3f:0;L(g,Color.FromArgb(214,188,147),4,34,16,43,13-lift);Paw(g,42,12-lift,0);if(lifting&&stats.Food>0)E(g,Color.FromArgb(173,116,55),51,8-lift,3,3);L(g,Color.FromArgb(93,63,39),.65f,52,8,55,8+(float)Math.Sin(Now*17)*.45f);}
   g.Restore(hs);if(activity=="Playing"){float reach=MathF.Pow(Math.Max(0,MathF.Sin((float)(Now-playStart)*7)),3);L(g,Color.FromArgb(211,183,144),4,29,19,41+reach*10,17);Paw(g,38+reach*10,17,0);}g.Restore(saved);
  }
  void DrawProp(Graphics g,Prop p){
-  float x=p.Position.X,y=p.Position.Y;if(p.Kind=="Ball"){DrawBall(g,p.Position,false);return;}E(g,Color.FromArgb(109,100,85),x-44,y+21,88,7);
+  float x=p.Position.X,y=p.Position.Y;if(p.Kind=="Wheel"){DrawWheel(g,p);return;}if(p.Kind=="Ball"){DrawBall(g,p.Position,false);return;}E(g,Color.FromArgb(109,100,85),x-44,y+21,88,7);
   if(p.Kind=="Food"){
    using var bowl=new LinearGradientBrush(new RectangleF(x-40,y-8,80,39),Color.LightSteelBlue,Color.FromArgb(58,100,132),90);g.FillEllipse(bowl,x-40,y-8,80,37);E(g,Color.FromArgb(204,222,230),x-42,y-16,84,30);E(g,Color.FromArgb(92,85,70),x-35,y-12,70,22);E(g,Color.FromArgb(133,133,116),x-30,y-9,60,15);
    for(int i=0;i<stats.Food;i++){float a=i*2.39996f,r=5+(i%6)*4.5f,xx=x+MathF.Cos(a)*r,yy=y-3+MathF.Sin(a)*r*.25f;E(g,i%3==0?Color.Wheat:i%3==1?Color.Peru:Color.SaddleBrown,xx-3,yy-2,6,4);L(g,Color.FromArgb(104,78,44),.5f,xx-1,yy-1,xx+1,yy+1);}using var rim=new Pen(Color.FromArgb(181,203,215),2);g.DrawArc(rim,x-40,y-14,80,27,0,180);
@@ -161,6 +215,22 @@ internal sealed class Buddy:Form {
    if(playing){float phase=(float)(Now-playStart)*2.6f,cycle=phase-MathF.Floor(phase);hop=4*cycle*(1-cycle)*16;nudge=MathF.Sin(phase*MathF.PI)*9;roll=nudge*2.4f;}
    var s=g.Save();g.TranslateTransform(x+nudge,y-hop);g.RotateTransform(roll);using var b=new LinearGradientBrush(new RectangleF(-24,-24,48,48),Color.FromArgb(213,134,94),Color.FromArgb(116,62,39),40);g.FillEllipse(b,-24,-24,48,48);using var seam=new Pen(Color.FromArgb(228,204,161),3);g.DrawArc(seam,-14,-23,24,46,-90,180);E(g,Color.FromArgb(233,175,130),-10,-16,9,5);g.Restore(s);
   }
+ }
+ void DrawWheel(Graphics g,Prop p){
+  float x=p.Position.X,y=p.Position.Y,cy=y-25;
+  E(g,Color.FromArgb(100,96,88),x-102,y+77,204,9);
+  L(g,Color.FromArgb(65,91,105),12,x,y-20,x-58,y+77);L(g,Color.FromArgb(65,91,105),12,x,y-20,x+58,y+77);
+  L(g,Color.FromArgb(76,108,121),12,x-85,y+78,x+85,y+78);
+  E(g,Color.FromArgb(61,91,101),x-91,cy-91,182,182);
+  E(g,Color.FromArgb(184,212,215),x-82,cy-82,164,164);
+  var s=g.Save();g.TranslateTransform(x,cy);g.RotateTransform(wheelAngle);
+  for(int i=0;i<8;i++){float a=i*MathF.PI/4;L(g,Color.FromArgb(139,180,188),4,0,0,MathF.Cos(a)*76,MathF.Sin(a)*76);}
+  for(int i=0;i<28;i++){float a=i*MathF.PI/14;L(g,Color.FromArgb(232,224,194),3,MathF.Cos(a)*77,MathF.Sin(a)*77,MathF.Cos(a)*85,MathF.Sin(a)*85);}
+  g.Restore(s);E(g,Color.FromArgb(73,110,125),x-10,cy-10,20,20);E(g,Color.FromArgb(202,221,225),x-4,cy-4,8,8);
+ }
+ void DrawWheelFront(Graphics g,Prop p){
+  using var rim=new Pen(Color.FromArgb(64,106,122),5);g.DrawArc(rim,p.Position.X-88,p.Position.Y-113,176,176,5,170);
+  using var shine=new Pen(Color.FromArgb(214,230,231),2);g.DrawArc(shine,p.Position.X-85,p.Position.Y-110,170,170,200,80);
  }
  void DrawBall(Graphics g,PointF p,bool occupied){var s=g.Save();g.TranslateTransform(p.X,p.Y);using var edge=new Pen(Color.SteelBlue,2);g.DrawEllipse(edge,-65,-65,130,130);g.RotateTransform(occupied?spin:0);using var seam=new Pen(Color.LightSteelBlue,1.5f);g.DrawEllipse(seam,-34,-65,68,130);g.DrawEllipse(seam,-65,-23,130,46);for(int i=0;i<8;i++){float a=i*MathF.PI/4;L(g,Color.CadetBlue,2,MathF.Cos(a)*54,MathF.Sin(a)*54,MathF.Cos(a)*60,MathF.Sin(a)*60);}g.Restore(s);using var shine=new Pen(Color.WhiteSmoke,3);g.DrawArc(shine,p.X-58,p.Y-58,116,116,205,45);}
  void Save(){try{Directory.CreateDirectory(Path.GetDirectoryName(file)!);File.WriteAllText(file+".tmp",JsonSerializer.Serialize(stats));File.Move(file+".tmp",file,true);}catch{}}
