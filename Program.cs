@@ -1,4 +1,4 @@
-// DesktopHamster: slower wheel runs, in-wheel rests, clear feet, no foreground bars, curled sleeping.
+// DesktopHamster: slower wheel runs, in-wheel rests, original animated paws, no foreground bars, curled sleeping.
 using System.Diagnostics;
 using System.Drawing.Drawing2D;
 using System.Runtime.InteropServices;
@@ -185,7 +185,12 @@ internal sealed class Buddy:Form {
   float petTime=(float)(Now-petStarted),petEase=petted?Math.Clamp(petTime/.28f,0,1)*Math.Clamp((float)(until-Now)/.45f,0,1):0;
   float stride=moving?MathF.Sin((float)Now*(wheelRun?8:12)):0;
   E(g,Color.FromArgb(97,88,76),-44,27,93,6);
-  if(activity!="Sleeping"){Paw(g,-28,24,Math.Max(0,stride)*(wheelRun?6:2.5f));Paw(g,23,23,Math.Max(0,-stride)*(wheelRun?6:2.5f));}
+  // The same original two paws, drawn once and partly tucked under the coat.
+  if(activity!="Sleeping"){
+   float swing=wheelRun?MathF.Cos((float)Now*8)*3:0;
+   Paw(g,-28+swing,24,Math.Max(0,stride)*(wheelRun?2.8f:2.5f));
+   Paw(g,23-swing,23,Math.Max(0,-stride)*(wheelRun?2.8f:2.5f));
+  }
   g.TranslateTransform(0,moving?MathF.Abs(stride)*(wheelRun?-.5f:-1.2f):MathF.Sin((float)Now*(resting||activity=="Sleeping"?1.8f:2.7f))*(resting||activity=="Sleeping" ? .8f : .5f));
   if(petted){g.TranslateTransform(0,22);g.RotateTransform((-2.3f+MathF.Sin(petTime*7)*.8f)*petEase);g.TranslateTransform(0,-22);g.TranslateTransform(1.5f*petEase,MathF.Sin(petTime*8)*.6f*petEase);}
   if(activity=="Sleeping"){DrawSleeping(g);g.Restore(saved);return;}
@@ -199,7 +204,6 @@ internal sealed class Buddy:Form {
   for(int i=0;i<4;i++)L(g,Color.FromArgb(167,153,130),.6f,48,5,65+i*2,-4+i*4+(float)Math.Sin(Now*11+i)*.45f);
   if(eating){float phase=(float)((Now-nextBite+1.15)/1.15);bool lifting=phase>.43f&&phase<.94f;float lift=lifting?MathF.Sin((phase-.43f)/.51f*MathF.PI)*2.3f:0;L(g,Color.FromArgb(214,188,147),4,34,16,43,13-lift);Paw(g,42,12-lift,0);if(lifting&&stats.Food>0)E(g,Color.FromArgb(173,116,55),51,8-lift,3,3);L(g,Color.FromArgb(93,63,39),.65f,52,8,55,8+(float)Math.Sin(Now*17)*.45f);}
   g.Restore(hs);
-  if(wheelRun){DrawRunningLeg(g,-26,(float)Now*8);DrawRunningLeg(g,26,(float)Now*8+MathF.PI);}
   if(activity=="Playing"){float reach=MathF.Pow(Math.Max(0,MathF.Sin((float)(Now-playStart)*7)),3);L(g,Color.FromArgb(211,183,144),4,29,19,41+reach*10,17);Paw(g,38+reach*10,17,0);}g.Restore(saved);
  }
  void DrawProp(Graphics g,Prop p){
@@ -232,13 +236,6 @@ internal sealed class Buddy:Form {
   for(int i=0;i<24;i++){float a=i*MathF.PI/12;L(g,Color.FromArgb(139,112,74),1.6f,MathF.Cos(a)*86,MathF.Sin(a)*86,MathF.Cos(a)*91,MathF.Sin(a)*91);}
   g.Restore(saved);
   using var highlight=new Pen(Color.FromArgb(243,230,203),2);g.DrawArc(highlight,x-91,cy-91,182,182,207,67);
- }
- void DrawRunningLeg(Graphics g,float anchor,float phase){
-  float swing=MathF.Cos(phase)*7,lift=Math.Max(0,MathF.Sin(phase))*8;
-  float footX=anchor+swing,footY=27-lift;
-  L(g,Color.FromArgb(187,143,96),4.8f,anchor-3,14,footX,footY-1);
-  L(g,Color.FromArgb(226,199,156),2.4f,anchor-2,14,footX,footY-2);
-  Paw(g,footX-3,footY,0);
  }
  static GraphicsPath CurledBody(){
   var p=new GraphicsPath();p.AddBezier(-46,15,-57,-9,-42,-35,-15,-38);p.AddBezier(-15,-38,12,-42,38,-26,43,-2);
