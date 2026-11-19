@@ -223,7 +223,7 @@ internal sealed class Buddy:Form {
   using(var baseBrush=new LinearGradientBrush(new RectangleF(x-96,y+69,192,16),Color.FromArgb(120,146,145),Color.FromArgb(45,64,65),90)){
    using var basePath=new GraphicsPath();basePath.AddBezier(x-96,y+82,x-94,y+69,x-79,y+69,x-65,y+69);basePath.AddLine(x-65,y+69,x+75,y+69);basePath.AddBezier(x+75,y+69,x+90,y+69,x+99,y+76,x+99,y+82);basePath.CloseFigure();g.FillPath(baseBrush,basePath);
   }
-  using(var depth=new LinearGradientBrush(new RectangleF(x-91,cy-94,198,188),Color.FromArgb(101,131,130),Color.FromArgb(37,64,67),0))g.FillEllipse(depth,x-82,cy-94,188,188);
+  using(var depth=new LinearGradientBrush(new RectangleF(x-91,cy-94,198,188),Color.FromArgb(101,131,130),Color.FromArgb(37,64,67),0f))g.FillEllipse(depth,x-82,cy-94,188,188);
   using(var outer=new LinearGradientBrush(new RectangleF(x-94,cy-94,188,188),Color.FromArgb(215,197,155),Color.FromArgb(132,103,64),125))g.FillEllipse(outer,x-94,cy-94,188,188);
   using(var inner=new LinearGradientBrush(new RectangleF(x-83,cy-83,166,166),Color.FromArgb(67,91,91),Color.FromArgb(133,160,155),100))g.FillEllipse(inner,x-83,cy-83,166,166);
   using(var track=new Pen(Color.FromArgb(183,157,110),11))g.DrawArc(track,x-77,cy-77,154,154,12,156);
