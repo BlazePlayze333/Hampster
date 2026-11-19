@@ -16,4 +16,8 @@
     <DebugType>None</DebugType>
     <DebugSymbols>false</DebugSymbols>
   </PropertyGroup>
+<ItemGroup>
+  <EmbeddedResource Include="hampster_app_icon.png"
+                    LogicalName="DesktopHamster.TrayImage" />
+</ItemGroup>
 </Project>
